@@ -1,0 +1,382 @@
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  stageName:
+    Type: String
+    Default: dev
+  subDomain:
+    Type: String
+    Default: url.yourdomain.com
+  HostedZoneId:
+    Type: String
+    Default: 
+  domainNameParam:
+    Type: String
+    Default: yourdomain.com
+  secretName:
+    Type: String
+    Default: firebase_auth_secret
+  senderEmail:
+    Type: String
+    Default: email@domain.com
+  emailRegion:
+    Type: String
+    Default: us-east-2  
+  jwtIssuer:
+    Type: String
+    Default: https://securetoken.google.com/
+  authorizerAudience:
+    Type: String
+    Default: your-firebase-project-id
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt usertable.Arn
+                  - !Sub ${usertable.Arn}/*
+        - PolicyName: SecretManager
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${secretName}-*
+        - PolicyName: EmailPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+  HttpApiCertifcate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref subDomain
+      DomainValidationOptions:
+        - DomainName: !Ref subDomain
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+  HttpApiDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref subDomain
+      DomainNameConfigurations:
+        - CertificateArn: !Ref HttpApiCertifcate
+          EndpointType: REGIONAL
+  ARecordApiDomainRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: beamze.com.
+      Name: url.beamze.com.
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt HttpApiDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt HttpApiDomainName.RegionalHostedZoneId
+        EvaluateTargetHealth: false
+  HttpApiMap:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    DependsOn: HttpApiDomainName
+    Properties:
+      ApiId: !Ref urlshortnerserverapi
+      DomainName: !Ref subDomain
+      Stage: !Ref stageName
+  createurl:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: createurl
+      CodeUri: src/createurl
+      Handler: createurl.handler
+      Runtime: python3.9
+      MemorySize: 3008
+      Timeout: 30
+      Tracing: Active
+      Architectures:
+        - arm64
+      Events:
+        urlshortnerserverPOSTcreateurl:
+          Type: HttpApi
+          Properties:
+            Path: /createurl
+            Method: POST
+            ApiId: !Ref urlshortnerserverapi
+      Environment:
+        Variables:
+          URLSHORTNERTABLE_TABLE_NAME: !Ref urlshortnertable
+          URLSHORTNERTABLE_TABLE_ARN: !GetAtt urlshortnertable.Arn
+          DOMAIN_NAME_PARAM: !Ref domainNameParam
+          TEST: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref urlshortnertable
+  createurlLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${createurl}
+  urlshortnerserverapi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Sub
+        - ${ResourceName} From Stack ${AWS::StackName}
+        - ResourceName: Api
+      StageName: !Ref stageName
+      Auth:
+        Authorizers:
+          HttpAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub ${jwtIssuer}${authorizerAudience}
+              audience:
+                - !Ref authorizerAudience
+            IdentitySource: $request.header.Authorization
+        DefaultAuthorizer: HttpAuthorizer
+  urlshortnertable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: shortCode
+          AttributeType: S
+        - AttributeName: createdBy
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UniqueKeyIndex
+          KeySchema:
+            - AttributeName: shortCode
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: createdByIndex
+          KeySchema:
+            - AttributeName: createdBy
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+  geturls:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: geturls
+      CodeUri: src/geturls
+      Handler: geturls.handler
+      Runtime: python3.9
+      MemorySize: 3008
+      Timeout: 30
+      Tracing: Active
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          URLSHORTNERTABLE_TABLE_NAME: !Ref urlshortnertable
+          URLSHORTNERTABLE_TABLE_ARN: !GetAtt urlshortnertable.Arn
+          DOMAIN_NAME_PARAM: !Ref domainNameParam
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref urlshortnertable
+      Events:
+        urlshortnerserverGETgeturls:
+          Type: HttpApi
+          Properties:
+            Path: /geturls
+            Method: GET
+            ApiId: !Ref urlshortnerserverapi
+  geturlsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${geturls}
+  deleteurl:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: deleteurl
+      CodeUri: src/deleteurl
+      Handler: deleteurl.handler
+      Runtime: python3.9
+      MemorySize: 3008
+      Timeout: 30
+      Tracing: Active
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          URLSHORTNERTABLE_TABLE_NAME: !Ref urlshortnertable
+          URLSHORTNERTABLE_TABLE_ARN: !GetAtt urlshortnertable.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref urlshortnertable
+      Events:
+        urlshortnerserverDELETEdeleteurlid:
+          Type: HttpApi
+          Properties:
+            Path: /deleteurl/{id}
+            Method: DELETE
+            ApiId: !Ref urlshortnerserverapi
+  deleteurlLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${deleteurl}
+  redirect:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: redirect
+      CodeUri: src/redirect
+      Handler: redirect.handler
+      Runtime: python3.9
+      MemorySize: 3008
+      Timeout: 30
+      Tracing: Active
+      Architectures:
+        - arm64
+      Events:
+        urlshortGETredirect:
+          Type: HttpApi
+          Properties:
+            Path: /{short_code}
+            Method: GET
+            ApiId: !Ref urlshortnerserverapi
+            Auth:
+              Authorizer: NONE
+      Environment:
+        Variables:
+          URLSHORTNERTABLE_TABLE_NAME: !Ref urlshortnertable
+          URLSHORTNERTABLE_TABLE_ARN: !GetAtt urlshortnertable.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref urlshortnertable
+  redirectLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${redirect}
+  signup:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: signup
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: src/signup
+      Handler: signup.handler
+      Runtime: python3.9
+      MemorySize: 3008
+      Timeout: 30
+      Tracing: Active
+      Events:
+        urlshortnersignupPOST:
+          Type: HttpApi
+          Properties:
+            Path: /signup
+            Method: POST
+            ApiId: !Ref urlshortnerserverapi
+            Auth:
+              Authorizer: NONE
+      Environment:
+        Variables:
+          USERTABLE_TABLE_NAME: !Ref usertable
+          USERTABLE_TABLE_ARN: !GetAtt usertable.Arn
+          SECRET_NAME: !Ref secretName
+          SENDER_EMAIL: !Ref senderEmail
+          EMAIL_REGION: !Ref emailRegion
+      Layers:
+        - !Ref Layer
+  signupLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${signup}
+  usertable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+  Layer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Layer ${ResourceName}
+        - ResourceName: shortUrlLayer
+      ContentUri: src/Layer
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.8
+  login:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: login
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: src/login
+      Handler: login.handler
+      Runtime: python3.9
+      MemorySize: 3008
+      Timeout: 30
+      Tracing: Active
+      Layers:
+        - !Ref Layer
+      Events:
+        urlshortnerloginPOST:
+          Type: HttpApi
+          Properties:
+            Path: /login
+            Method: POST
+            ApiId: !Ref urlshortnerserverapi
+            Auth:
+              Authorizer: NONE
+      Environment:
+        Variables:
+          SECRET_NAME: !Ref secretName
+  loginLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${login}
