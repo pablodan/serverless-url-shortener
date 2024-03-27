@@ -19,7 +19,24 @@ Before you begin, make sure you have the following installed on your local machi
 
 ### 1. Local Development
 
+To Build
+```
+sam build
+```
 To start a local development server and test your serverless application locally, use the `sam local start-api` command:
 
-```bash
+```
 sam local start-api
+```
+
+## To deploy to AWS 
+```
+sam deploy --guided
+```
+
+
+### Additional Commands
+To package your application without deploying it, use the sam package command.
+To debug your serverless application locally, use the sam local invoke or sam local start-api --debug commands.
+For more information and advanced usage, refer to the AWS SAM CLI documentation.
+
