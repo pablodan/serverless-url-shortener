@@ -33,6 +33,10 @@ sam local start-api
 ```
 sam deploy --guided
 ```
+## Or
+```
+sam deploy 
+```
 
 
 ### Additional Commands
